@@ -10,12 +10,18 @@
 #include <WiFiClientSecure.h>
 #include <HTTPClient.h>
 #include <WebServer.h>
+#include <ESPmDNS.h>
 #include <ArduinoJson.h>
 #include "esp_camera.h"
 #include "img_converters.h"
 #include "mbedtls/base64.h"
-#include "index_html.h"
 #include "secrets.h"  // WIFI_SSID, WIFI_PASS, OPENROUTER_API_KEY
+
+// The board's name on the network: the web page is at http://<HOSTNAME>.local/
+// If you change it, make a new QR code (qr.svg holds the one for "handwriting").
+#define HOSTNAME "handwriting"
+
+#include "index_html.h"  // uses HOSTNAME, so it comes after it
 
 // Any OpenRouter model that accepts image input works here.
 #define OCR_MODEL "google/gemini-3.8-flash"
@@ -27,6 +33,12 @@
   "Do not solve, simplify or correct anything. " \
   "Keep the line breaks. Output only the transcription, with no commentary. " \
   "If there is no readable handwriting, reply with: [no handwriting found]"
+
+// Status LEDs. Wire each one from its pin, through a resistor (about 220 ohm),
+// to GND. These three pins are not used by the camera board.
+#define LED_GREEN  D0  // working ok
+#define LED_YELLOW D1  // the last read failed
+#define LED_RED    D2  // any other error (no WiFi, camera or memory fault)
 
 // Camera pins for the XIAO ESP32S3 Sense expansion board.
 #define PWDN_GPIO_NUM  -1
@@ -57,6 +69,20 @@ WebServer server(80);
 String lastTiming;  // timing breakdown of the most recent read
 String latestText;  // result of the most recent read
 uint32_t readCount = 0;
+bool lastReadFailed = false;
+
+// Lights exactly one of the three status LEDs.
+void showLed(int pin) {
+  digitalWrite(LED_GREEN, pin == LED_GREEN);
+  digitalWrite(LED_YELLOW, pin == LED_YELLOW);
+  digitalWrite(LED_RED, pin == LED_RED);
+}
+
+void updateLeds() {
+  if (WiFi.status() != WL_CONNECTED) showLed(LED_RED);
+  else if (lastReadFailed) showLed(LED_YELLOW);
+  else showLed(LED_GREEN);
+}
 
 // Live mode: the board watches a small greyscale copy of the camera picture
 // and starts a read by itself when the page has changed and then gone still
@@ -226,6 +252,9 @@ String recogniseHandwriting() {
 void doRead() {
   latestText = recogniseHandwriting();
   readCount++;
+  // A read fails if something went wrong, or if no handwriting was found.
+  lastReadFailed = latestText.startsWith("Error:") || latestText == "[no handwriting found]";
+  updateLeds();
   Serial.println(latestText);
 }
 
@@ -330,14 +359,20 @@ void handleState() {
 
 void setup() {
   Serial.begin(115200);
+  pinMode(LED_GREEN, OUTPUT);
+  pinMode(LED_YELLOW, OUTPUT);
+  pinMode(LED_RED, OUTPUT);
+  showLed(-1);  // all off until the board is ready
   delay(1500);
 
   if (!psramFound()) {
     Serial.println("PSRAM not found: set Tools > PSRAM > OPI PSRAM and re-upload.");
+    showLed(LED_RED);
     while (true) delay(1000);
   }
   if (!initCamera()) {
     Serial.println("Check the camera board is firmly seated on the XIAO.");
+    showLed(LED_RED);
     while (true) delay(1000);
   }
   rgbScratch = (uint8_t *)ps_malloc(THUMB_PIXELS * 2);
@@ -345,14 +380,25 @@ void setup() {
   thumbPrev = (uint8_t *)ps_malloc(THUMB_PIXELS);
   thumbRead = (uint8_t *)ps_malloc(THUMB_PIXELS);
 
+  WiFi.setHostname(HOSTNAME);  // must come before WiFi.mode()
   WiFi.mode(WIFI_STA);
   WiFi.begin(WIFI_SSID, WIFI_PASS);
   Serial.printf("Connecting to WiFi \"%s\"", WIFI_SSID);
   while (WiFi.status() != WL_CONNECTED) {
     delay(500);
     Serial.print(".");
+    digitalWrite(LED_GREEN, !digitalRead(LED_GREEN));  // green blinks while connecting
   }
-  Serial.printf("\nReady. Open http://%s/ in a browser,\n", WiFi.localIP().toString().c_str());
+  updateLeds();
+  // Announce the name on the local network, so the page has a fixed address.
+  String ip = WiFi.localIP().toString();
+  if (MDNS.begin(HOSTNAME)) {
+    MDNS.addService("http", "tcp", 80);
+    Serial.printf("\nReady. Open http://%s.local/ in a browser\n", HOSTNAME);
+    Serial.printf("(or http://%s/ if the name does not work),\n", ip.c_str());
+  } else {
+    Serial.printf("\nReady, but the name could not be set up. Open http://%s/ in a browser,\n", ip.c_str());
+  }
   Serial.println("or send any character here to read.");
 
   server.on("/", []() { server.send_P(200, "text/html", INDEX_HTML); });
@@ -371,5 +417,6 @@ void loop() {
     doRead();
   }
   liveTick();
+  updateLeds();  // also catches WiFi dropping out and coming back
   delay(2);
 }

@@ -8,6 +8,7 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(<!doctype html>
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
 <script defer src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
 <script defer src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/contrib/auto-render.min.js"></script>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js"></script>
 <style>
   :root{
     --bg:#f3efe6; --card:#fffdf8; --ink:#1f2933; --muted:#6b7280; --line:#d9d2c3;
@@ -94,6 +95,11 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(<!doctype html>
   .tbar div{height:100%}
   .legend{display:flex;flex-wrap:wrap;gap:4px 14px}
   .legend i{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:5px}
+  /* QR code for opening the page on a phone */
+  .share{display:flex;align-items:center;gap:14px;margin-top:16px}
+  #qr{flex:none;width:132px;height:132px;border-radius:8px;background:#fff;image-rendering:pixelated}
+  .share p{margin:0;font-size:.9rem;color:var(--muted)}
+  .share a{color:var(--accent);font-weight:600;word-break:break-all}
   @media (prefers-reduced-motion: reduce){*{animation:none!important;transition:none!important}}
 </style></head><body>
 <div class="wrap">
@@ -126,6 +132,10 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(<!doctype html>
       <div id="time"></div>
     </section>
   </div>
+  <section class="card share">
+    <canvas id="qr" role="img" aria-label="QR code for this page"></canvas>
+    <p>Scan to open this page on a phone on the same WiFi.<br><a id="addr"></a></p>
+  </section>
 </div>
 <script>
 const $ = id => document.getElementById(id);
@@ -255,6 +265,20 @@ $('copy').onclick = () => {
   $('copy').textContent = ok ? 'Copied' : 'Copy failed';
   setTimeout(() => { $('copy').textContent = 'Copy'; }, 1500);
 };
+
+// QR code for the board's named address. HOSTNAME comes from handwriting.ino.
+const PAGE_URL = 'http://)HTML" HOSTNAME R"HTML(.local/';
+$('addr').textContent = $('addr').href = PAGE_URL;
+window.addEventListener('load', () => {
+  if (!window.qrcode) return;  // library did not load (no internet): the link is still shown
+  const q = qrcode(0, 'M'); q.addData(PAGE_URL); q.make();
+  const n = q.getModuleCount(), margin = 4, c = $('qr');
+  c.width = c.height = n + 2 * margin;  // one pixel per square; CSS scales it up
+  const g = c.getContext('2d');
+  g.fillStyle = '#fff'; g.fillRect(0, 0, c.width, c.height);
+  g.fillStyle = '#000';
+  for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) if (q.isDark(y, x)) g.fillRect(x + margin, y + margin, 1, 1);
+});
 
 previewLoop();
 stateLoop();
